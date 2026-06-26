@@ -21,25 +21,34 @@ RISK_PER_TRADE = 0.01
 MIN_MICRO_R2 = 0.65
 MIN_VELOCITY = 60.0
 MIN_HURST = 0.50
-ATR_MULTIPLIER = 1.5 # Tighter stop for early entry
+ATR_MULTIPLIER = 1.5 
 
 # ==========================================
-# 2. WATCHLIST
+# 2. DYNAMIC CSV WATCHLIST LOADER
 # ==========================================
-MY_PORTFOLIO = ["ITC.NS"] # Add stocks you own here
+def load_symbols_from_csv(filename):
+    if not os.path.exists(filename):
+        return []
+    try:
+        # Read the CSV, assuming no header, taking the first column
+        df = pd.read_csv(filename, header=None)
+        # Drop empties, strip whitespace, convert to list
+        symbols = df[0].dropna().astype(str).str.strip().tolist()
+        return [s for s in symbols if s]
+    except Exception as e:
+        print(f"Error reading {filename}: {e}")
+        return []
 
-nse_stocks = [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "HINDUNILVR.NS", 
-    "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "KOTAKBANK.NS", "LT.NS", "BAJFINANCE.NS", 
-    "HCLTECH.NS", "ASIANPAINT.NS", "AXISBANK.NS", "MARUTI.NS", "SUNPHARMA.NS", 
-    "TITAN.NS", "DMART.NS", "ULTRACEMCO.NS", "BAJAJFINSV.NS", "WIPRO.NS", "M&M.NS", 
-    "TATASTEEL.NS", "ADANIENT.NS", "POWERGRID.NS", "NTPC.NS", "TMCV.NS",
-    "TECHM.NS", "NESTLEIND.NS", "ONGC.NS", "GRASIM.NS", "HINDALCO.NS", "JSWSTEEL.NS",
-    "TRENT.NS", "BHEL.NS", "HAL.NS", "BEL.NS", "DLF.NS", "PFC.NS", "RECLTD.NS", "INDIGO.NS",
-    "BSE.NS", "SUZLON.NS", "DIXON.NS", "CHOLAFIN.NS", "BANKBARODA.NS"
-]
+# Load files
+MY_PORTFOLIO = load_symbols_from_csv("portfolio.csv")
+nse_stocks = load_symbols_from_csv("watchlist.csv")
 
+# Ensure portfolio stocks are always scanned
 nse_stocks = list(set(nse_stocks + MY_PORTFOLIO))
+
+if not nse_stocks:
+    print("Error: watchlist.csv is empty or missing!")
+    exit()
 
 def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -61,11 +70,10 @@ def get_hurst(ts):
 triggered_stocks = []
 portfolio_warnings = []
 
-print("⚙️ Booting Zero-Lag Kinetic Engine...")
+print(f"⚙️ Booting Zero-Lag Engine... (Scanning {len(nse_stocks)} stocks)")
 
 for stock in nse_stocks:
     try:
-        # Fetch 4 months to comfortably cover 45-day window + 30-day AVWAP history
         df = yf.download(stock, period="4mo", progress=False)
         if len(df) < 60: continue
         if isinstance(df.columns, pd.MultiIndex): df.columns = [c[0] for c in df.columns]
@@ -77,7 +85,7 @@ for stock in nse_stocks:
         avg_turnover = df['Turnover'].rolling(20).mean().iloc[-1]
         if avg_turnover < 10.0: continue
 
-        # 2. GAPLESS PRICE (Removes False Gap-Ups)
+        # 2. GAPLESS PRICE 
         df['Intraday'] = df['Close'] - df['Open']
         df['Gapless'] = df['Intraday'].cumsum()
         
@@ -92,7 +100,7 @@ for stock in nse_stocks:
         _, _, r_med, _, _ = linregress(x45, c45_gapless)
         r2_med = r_med**2
         
-        # 3. KINETIC VELOCITY (Real Closing Prices)
+        # 3. KINETIC VELOCITY 
         c14_real = df['Close'].iloc[-14:].values
         slope_real, _, _, _, _ = linregress(x14, c14_real)
         base_price = c14_real[0]
@@ -128,7 +136,6 @@ for stock in nse_stocks:
 
         # --- PORTFOLIO DANGER WARNING ---
         if stock in MY_PORTFOLIO:
-            # Sell warning if the micro momentum violently dies, or drops below the Anchored VWAP
             if r2_micro < 0.20 or c < vwap:
                 portfolio_warnings.append({"ticker": stock.replace('.NS', ''), "r2": r2_micro, "vwap": vwap})
             
